@@ -2,6 +2,7 @@ node_modules/
 dist/
 .*/
 .env
+.mcp.json
 docs/
 CLAUDE.md
 *.tsbuildinfo
