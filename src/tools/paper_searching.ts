@@ -1,22 +1,11 @@
-import type { PaperMeta } from "../types.js";
+import type { PaperMeta, ScholarItem } from "../types.js";
 import { normTitle } from "../utils/misc.js";
-import * as ss from "../utils/ss.js";
 import * as arxiv from "../utils/arxiv.js";
+import * as ss from "../utils/ss.js";
 import * as unpaywall from "../utils/unpaywall.js";
 
-/** Apify Google Scholar scraper raw item shape. */
-export interface ApifyScholarItem {
-  title?: string;
-  link?: string;
-  authors?: string;
-  year?: string | number;
-  citations?: string | number;
-  searchMatch?: string;
-  documentLink?: string;
-}
-
 /** Parse base fields from apify scraper output. */
-function parseApifyItem(item: ApifyScholarItem): PaperMeta {
+export function parseScholarItem(item: ScholarItem): PaperMeta {
   const title = item.title ?? "";
   const arxivMatch = (item.link ?? "").match(
     /arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5})/i,
@@ -34,61 +23,65 @@ function parseApifyItem(item: ApifyScholarItem): PaperMeta {
     authors: item.authors ?? undefined,
     abstract: item.searchMatch ?? undefined,
     citationCount: item.citations != null ? Number(item.citations) : undefined,
-    // oaPdfUrl left empty — filled by Semantic Scholar or Unpaywall in enrichMeta
     sourceUrl: item.link ?? undefined,
   };
 }
 
 /**
- * Enrich a PaperMeta with data from Semantic Scholar, arXiv, and Unpaywall.
- * This is the core enrichment logic, reused by paper_references.
+ * Enrich a PaperMeta. Pipeline: ① arxivUrl already? ② arXiv search ③ SS search ④ Unpaywall
  */
 export async function enrichMeta(meta: PaperMeta): Promise<PaperMeta> {
-  // 1. Semantic Scholar
+  // ① Already have arxivUrl — done
+  if (meta.arxivUrl) return meta;
+
+  // ② arXiv title search
+  const arxivResult = await arxiv.query(meta.title);
+  if (arxivResult?.arxivUrl) {
+    meta.arxivId = arxivResult.arxivId;
+    meta.arxivUrl = arxivResult.arxivUrl;
+    if (!meta.abstract) meta.abstract = arxivResult.abstract;
+    if (!meta.authors) meta.authors = arxivResult.authors;
+    if (!meta.year) meta.year = arxivResult.year;
+    return meta;
+  }
+
+  // ③ SS title search (only if arXiv failed)
   const ssResult = await ss.query(meta.title);
   if (ssResult) {
     if (!meta.s2Id) meta.s2Id = ssResult.s2Id;
     if (!meta.doi) meta.doi = ssResult.doi;
-    if (!meta.arxivId) meta.arxivId = ssResult.arxivId;
-    if (!meta.arxivUrl) meta.arxivUrl = ssResult.arxivUrl;
-    if (!meta.oaPdfUrl) meta.oaPdfUrl = ssResult.oaPdfUrl;
     if (!meta.year) meta.year = ssResult.year;
     if (!meta.authors) meta.authors = ssResult.authors;
     if (!meta.abstract) meta.abstract = ssResult.abstract;
     if (!meta.citationCount) meta.citationCount = ssResult.citationCount;
     if (!meta.sourceUrl) meta.sourceUrl = ssResult.sourceUrl;
-  }
 
-  // 2. If still no arxivUrl, try arXiv API
-  if (!meta.arxivUrl) {
-    const arxivResult = await arxiv.query(meta.title);
-    if (arxivResult?.arxivUrl) {
-      meta.arxivId = arxivResult.arxivId;
-      meta.arxivUrl = arxivResult.arxivUrl;
-      if (!meta.abstract) meta.abstract = arxivResult.abstract;
-      if (!meta.authors) meta.authors = arxivResult.authors;
-      if (!meta.year) meta.year = arxivResult.year;
+    // SS may reveal arXiv ID
+    if (ssResult.arxivId) {
+      meta.arxivId = ssResult.arxivId;
+      meta.arxivUrl = ssResult.arxivUrl;
+      return meta;
     }
-  }
 
-  // 3. If has DOI but no oaPdfUrl, try Unpaywall
-  if (meta.doi && !meta.oaPdfUrl) {
-    const upResult = await unpaywall.query(meta.doi);
-    if (upResult?.oaPdfUrl) {
-      meta.oaPdfUrl = upResult.oaPdfUrl;
+    // SS may have oaPdfUrl
+    if (!meta.oaPdfUrl && ssResult.oaPdfUrl) {
+      meta.oaPdfUrl = ssResult.oaPdfUrl;
+    }
+
+    // ④ Unpaywall: has DOI but still no oaPdfUrl
+    if (meta.doi && !meta.oaPdfUrl) {
+      try {
+        const upResult = await unpaywall.query(meta.doi);
+        if (upResult?.oaPdfUrl) meta.oaPdfUrl = upResult.oaPdfUrl;
+      } catch { /* EMAIL_UNPAYWALL may not be set */ }
     }
   }
 
   return meta;
 }
 
-/** Exported for testing. */
-export { parseApifyItem };
-
-/**
- * paper_searching tool: parse apify item + enrich metadata.
- */
-export async function paperSearching(item: ApifyScholarItem): Promise<PaperMeta> {
-  const meta = parseApifyItem(item);
+/** paper_searching tool: parse Scholar item + enrich metadata. */
+export async function paperSearching(item: ScholarItem): Promise<PaperMeta> {
+  const meta = parseScholarItem(item);
   return enrichMeta(meta);
 }
