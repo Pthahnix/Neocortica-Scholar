@@ -16,9 +16,9 @@ A component of [Neocortica](https://github.com/Pthahnix/Neocortica) — an MCP s
 
 ```bash
 npm install
+cp .mcp.example.json .mcp.json
+# Fill in your API keys in .mcp.json
 ```
-
-Configure environment variables in `.mcp.json` under the `neocortica-scholar` server's `env` field.
 
 ## Usage
 
@@ -29,6 +29,8 @@ npm run build        # Compile TypeScript
 ```
 
 ## Environment Variables
+
+Configured in `.mcp.json` under the `neocortica-scholar` server's `env` field. See `.mcp.example.json` for a template.
 
 | Variable | Purpose | Required |
 | -------- | ------- | -------- |
@@ -41,65 +43,24 @@ npm run build        # Compile TypeScript
 
 ## Architecture
 
-```text
-apify MCP (external) --> paper_searching --> paper_fetching --> paper_content
-                                                            \
-                                              paper_reference --> paper_searching (enrich)
-                                                            \
-                                              paper_reading (LLM three-pass)
-```
+The typical workflow starts with scraping Google Scholar via an external Apify MCP server, then processes papers through `paper_searching` → `paper_fetching`. Once fetched, papers can be read via `paper_content`, their references explored via `paper_reference`, or analyzed in depth via `paper_reading`.
 
-### Pipeline: paper_searching
+### paper_searching
 
-Priority: arXiv > Semantic Scholar > Unpaywall.
+Enriches raw Google Scholar results with open access metadata. Priority: arXiv title search → Semantic Scholar title search → Unpaywall DOI lookup. If an `arxivUrl` is already present in the input, enrichment is skipped.
 
-```text
-input → has arxivUrl? ── yes → done
-              │ no
-              ▼
-    arXiv title search? ── yes → arxivUrl → done
-              │ no
-              ▼
-    SS title search? ── yes → Unpaywall DOI lookup → oaPdfUrl
-              │ no                 │ no
-              ▼                    ▼
-            null                 done
-```
+### paper_fetching
 
-### Pipeline: paper_fetching
+Fetches full paper text as markdown with multiple fallback sources. Checks cache first, then tries local PDF (via MinerU), arxiv2md conversion, arxiv PDF via MinerU (fallback when arxiv2md fails), and finally OA PDF URL via MinerU. When using `pdfPath`, title and normalizedTitle are auto-derived from the filename.
 
-```text
-input → cache hit? ── yes → return cached
-            │ no
-            ▼
-    pdfPath? ── yes → MinerU (local PDF)
-            │ no
-            ▼
-    arxivUrl? ── yes → arxiv2md ── success → done
-            │ no          │ fail
-            ▼             ▼
-            │      arxivId? → arxiv PDF via MinerU
-            ▼
-    oaPdfUrl? ── yes → MinerU (remote PDF)
-            │ no
-            ▼
-    return without markdownPath
-```
+### paper_reference
+
+Retrieves all references of a paper. Primary path uses Semantic Scholar API with `s2Id`, `ARXIV:id`, or `DOI:id`. Falls back to parsing the References section from cached markdown when no identifiers are available.
 
 ### Known limitations
 
-- **arxiv2md**: Some arXiv papers cannot be converted (complex LaTeX, very long papers).
+- **arxiv2md**: Some arXiv papers cannot be converted (complex LaTeX, very long papers). Falls back to arxiv PDF via MinerU.
 - **oaPdfUrl via MinerU**: URLs from Unpaywall/SS that are DOI redirects (`doi.org/...`) may resolve to HTML landing pages or paywalls instead of actual PDFs, causing MinerU extraction to fail.
-
-## MCP Test Results (v0.2.0, 80 LLM papers)
-
-| Stage | Result |
-| ----- | ------ |
-| Scholar scrape | 80 papers (79 unique) |
-| paper_searching | 63/79 have OA (79.7%) |
-| paper_fetching | 58/63 succeeded (92.1%) |
-| arxiv2md failures | 2 (arxiv2md conversion limit) |
-| oaPdfUrl failures | 3 (DOI redirect → HTML/paywall) |
 
 ## License
 
