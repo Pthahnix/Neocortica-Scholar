@@ -4,16 +4,17 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { paperSearching } from "./tools/paper_searching.js";
 import { paperFetching } from "./tools/paper_fetching.js";
-import { paperReferences } from "./tools/paper_references.js";
+import { paperContent } from "./tools/paper_content.js";
+import { paperReference } from "./tools/paper_reference.js";
 import { paperReading } from "./tools/paper_reading.js";
 import type { ProgressCallback } from "./utils/pdf.js";
 
 const server = new McpServer({
   name: "neocortica-scholar",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
-// ── Helper: build progress callback from MCP extra ──────────────────
+// ── Helper ───────────────────────────────────────────────────────
 
 function makeProgress(extra: any): ProgressCallback {
   const token = extra?._meta?.progressToken;
@@ -28,11 +29,11 @@ function makeProgress(extra: any): ProgressCallback {
   };
 }
 
-// ── Tool 1: paper_searching ─────────────────────────────────────────
+// ── Tool 1: paper_searching ─────────────────────────────────────
 
 server.tool(
   "paper_searching",
-  "Enrich a raw Google Scholar result with metadata from Semantic Scholar, arXiv, and Unpaywall. " +
+  "Enrich a raw Google Scholar result with metadata from arXiv, Semantic Scholar, and Unpaywall. " +
   "Input: single item from apify google_scholar_scraper. Output: PaperMeta with abstract, arxivUrl, oaPdfUrl.",
   {
     title: z.string().optional().describe("Paper title"),
@@ -53,16 +54,16 @@ server.tool(
   },
 );
 
-// ── Tool 2: paper_fetching ──────────────────────────────────────────
+// ── Tool 2: paper_fetching ──────────────────────────────────────
 
 server.tool(
   "paper_fetching",
-  "Fetch full paper as markdown. Cache-first: checks local cache by normalizedTitle before network. " +
-  "Tries arxiv2md for arxivUrl, MinerU for oaPdfUrl. When pdfPath is set, title and normalizedTitle " +
-  "are auto-derived from the filename. Returns PaperMeta with markdownPath.",
+  "Fetch full paper as markdown. Cache-first. " +
+  "Tries arxiv2md for arxivUrl, MinerU for oaPdfUrl. When pdfPath is set, title is auto-derived from filename. " +
+  "Returns PaperMeta with markdownPath.",
   {
-    title: z.string().optional().describe("Paper title (auto-derived from pdfPath filename if omitted)"),
-    normalizedTitle: z.string().optional().describe("Normalized title for cache lookup (auto-derived from pdfPath filename if omitted)"),
+    title: z.string().optional().describe("Paper title"),
+    normalizedTitle: z.string().optional().describe("Normalized title for cache lookup"),
     arxivId: z.string().optional(),
     doi: z.string().optional(),
     s2Id: z.string().optional(),
@@ -86,45 +87,78 @@ server.tool(
   },
 );
 
-// ── Tool 3: paper_references ────────────────────────────────────────
+// ── Tool 3: paper_content ───────────────────────────────────────
 
 server.tool(
-  "paper_references",
-  "Extract cited references from a paper's markdown file, then enrich each with metadata " +
-  "from Semantic Scholar, arXiv, and Unpaywall. Returns PaperMeta[] for all found references.",
+  "paper_content",
+  "Read cached paper markdown content by title. Returns full markdown string. Pure local, no network.",
   {
-    markdownPath: z.string().describe("Absolute path to the paper's cached markdown file"),
+    title: z.string().optional().describe("Paper title"),
+    normalizedTitle: z.string().optional().describe("Normalized title for cache lookup"),
   },
-  async ({ markdownPath }) => {
+  async (args) => {
     try {
-      const results = await paperReferences(markdownPath);
-      return { content: [{ type: "text" as const, text: JSON.stringify(results, null, 2) }] };
+      const result = paperContent(args);
+      if (!result) {
+        return { content: [{ type: "text" as const, text: "Paper not found in cache." }] };
+      }
+      return { content: [{ type: "text" as const, text: result.content }] };
     } catch (e: any) {
-      return { isError: true, content: [{ type: "text" as const, text: `paper_references failed: ${e.message}` }] };
+      return { isError: true, content: [{ type: "text" as const, text: `paper_content failed: ${e.message}` }] };
     }
   },
 );
 
-// ── Tool 4: paper_reading (stub) ────────────────────────────────────
+// ── Tool 4: paper_reference ─────────────────────────────────────
+
+server.tool(
+  "paper_reference",
+  "Get all references of a paper. Uses Semantic Scholar API (by s2Id, arxivId, or DOI), " +
+  "falls back to markdown parsing if no identifiers available. Returns PaperMeta[] for all references.",
+  {
+    title: z.string().describe("Paper title"),
+    normalizedTitle: z.string().describe("Normalized title"),
+    s2Id: z.string().optional().describe("Semantic Scholar paper ID"),
+    arxivId: z.string().optional().describe("arXiv paper ID"),
+    doi: z.string().optional().describe("DOI"),
+    markdownPath: z.string().optional().describe("Path to cached markdown (for fallback parsing)"),
+  },
+  async (args) => {
+    try {
+      const results = await paperReference(args);
+      return { content: [{ type: "text" as const, text: JSON.stringify(results, null, 2) }] };
+    } catch (e: any) {
+      return { isError: true, content: [{ type: "text" as const, text: `paper_reference failed: ${e.message}` }] };
+    }
+  },
+);
+
+// ── Tool 5: paper_reading ───────────────────────────────────────
 
 server.tool(
   "paper_reading",
-  "AI-powered paper reader (NOT YET IMPLEMENTED). Will read paper markdown and return structured summary.",
+  "AI-powered paper reader using three-pass Keshav method. Reads paper markdown via LLM agent and returns structured report. " +
+  "Supports batch processing with configurable concurrency.",
   {
-    markdownPath: z.string().describe("Absolute path to the paper's cached markdown file"),
-    instructions: z.string().optional().describe("Optional reading focus instructions"),
+    papers: z.array(z.object({
+      markdownPath: z.string().describe("Absolute path to paper markdown"),
+      title: z.string().optional().describe("Paper title"),
+    })).describe("Papers to read"),
+    prompt: z.string().optional().describe("Custom reading prompt (default: three-pass Keshav method)"),
+    batchSize: z.number().optional().describe("Papers per agent (default: 1)"),
+    concurrency: z.number().optional().describe("Parallel agents (default: 1)"),
   },
-  async ({ markdownPath, instructions }) => {
+  async (args) => {
     try {
-      const result = await paperReading(markdownPath, instructions);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      const results = await paperReading(args);
+      return { content: [{ type: "text" as const, text: JSON.stringify(results, null, 2) }] };
     } catch (e: any) {
       return { isError: true, content: [{ type: "text" as const, text: `paper_reading failed: ${e.message}` }] };
     }
   },
 );
 
-// ── Start ───────────────────────────────────────────────────────────
+// ── Start ───────────────────────────────────────────────────────
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
