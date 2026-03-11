@@ -1,42 +1,47 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { unlinkSync } from "fs";
+import { resolve } from "path";
+import "dotenv/config";
 import { paperContent } from "../../src/tools/paper_content.js";
 import { saveMarkdown } from "../../src/utils/cache.js";
 
-describe("paper_content", () => {
-  let cacheDir: string;
-  const originalCache = process.env.DIR_CACHE;
+const cacheDir = process.env.DIR_CACHE || ".cache";
 
-  beforeEach(() => {
-    cacheDir = mkdtempSync(join(tmpdir(), "ncs-content-"));
-    process.env.DIR_CACHE = cacheDir;
-  });
+function cleanupTestFiles(normalizedTitles: string[]) {
+  for (const nt of normalizedTitles) {
+    const mdPath = resolve(cacheDir, "markdown", `${nt}.md`);
+    try { unlinkSync(mdPath); } catch {}
+  }
+}
+
+describe("paper_content", () => {
+  const testTitles: string[] = [];
 
   afterEach(() => {
-    process.env.DIR_CACHE = originalCache;
-    rmSync(cacheDir, { recursive: true, force: true });
+    cleanupTestFiles(testTitles);
+    testTitles.length = 0;
   });
 
   it("returns markdown content by normalizedTitle", () => {
-    saveMarkdown("Test Paper", "# Hello\n\nThis is a test paper.");
-    const result = paperContent({ normalizedTitle: "test_paper" });
+    testTitles.push("zztest_content_paper");
+    saveMarkdown("zztest Content Paper", "# Hello\n\nThis is a test paper.");
+    const result = paperContent({ normalizedTitle: "zztest_content_paper" });
     assert.ok(result);
     assert.equal(result!.content, "# Hello\n\nThis is a test paper.");
-    assert.ok(result!.markdownPath.endsWith("test_paper.md"));
+    assert.ok(result!.markdownPath.endsWith("zztest_content_paper.md"));
   });
 
   it("derives normalizedTitle from title when not provided", () => {
-    saveMarkdown("My Great Paper", "# Content here");
-    const result = paperContent({ title: "My Great Paper" });
+    testTitles.push("zztest_great_paper");
+    saveMarkdown("zztest Great Paper", "# Content here");
+    const result = paperContent({ title: "zztest Great Paper" });
     assert.ok(result);
     assert.equal(result!.content, "# Content here");
   });
 
   it("returns null when paper not cached", () => {
-    const result = paperContent({ normalizedTitle: "nonexistent_paper" });
+    const result = paperContent({ normalizedTitle: "zztest_nonexistent_paper_99999" });
     assert.equal(result, null);
   });
 
@@ -46,8 +51,9 @@ describe("paper_content", () => {
   });
 
   it("handles title with special characters", () => {
-    saveMarkdown("BERT: Pre-training of Transformers", "# BERT content");
-    const result = paperContent({ title: "BERT: Pre-training of Transformers" });
+    testTitles.push("zztest_bert_pre_training_of_transformers");
+    saveMarkdown("zztest BERT: Pre-training of Transformers", "# BERT content");
+    const result = paperContent({ title: "zztest BERT: Pre-training of Transformers" });
     assert.ok(result);
     assert.equal(result!.content, "# BERT content");
   });

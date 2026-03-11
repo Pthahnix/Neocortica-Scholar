@@ -1,26 +1,23 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { join, resolve } from "path";
+import { writeFileSync, unlinkSync } from "fs";
+import { resolve } from "path";
+import "dotenv/config";
 import { paperReference, extractReferenceTitles } from "../../src/tools/paper_reference.js";
 import type { PaperMeta } from "../../src/types.js";
 
 const originalFetch = global.fetch;
+const cacheDir = process.env.DIR_CACHE || ".cache";
 
 describe("paper_reference", () => {
-  let tmpDir: string;
-  const originalCache = process.env.DIR_CACHE;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "ncs-ref-"));
-    process.env.DIR_CACHE = tmpDir;
-  });
+  const testFiles: string[] = [];
 
   afterEach(() => {
-    process.env.DIR_CACHE = originalCache;
     global.fetch = originalFetch;
-    rmSync(tmpDir, { recursive: true, force: true });
+    for (const f of testFiles) {
+      try { unlinkSync(f); } catch {}
+    }
+    testFiles.length = 0;
   });
 
   // ── SS API primary path ─────────────────────────────────────
@@ -81,7 +78,8 @@ describe("paper_reference", () => {
     global.fetch = async () => new Response(JSON.stringify({ data: [] }),
       { status: 200, headers: { "Content-Type": "application/json" } });
 
-    const mdPath = resolve(tmpDir, "test.md");
+    const mdPath = resolve(cacheDir, "markdown", "zztest_ref_fallback.md");
+    testFiles.push(mdPath);
     writeFileSync(mdPath, `# Paper\n\n## References\n\n[1] Smith. "A Very Important Reference Paper Title." 2020.\n`);
 
     const meta: PaperMeta = { title: "T", normalizedTitle: "t", markdownPath: mdPath };
@@ -100,12 +98,12 @@ describe("paper_reference", () => {
     global.fetch = async (url: any) => {
       const urlStr = typeof url === "string" ? url : url.toString();
       if (urlStr.includes("/references")) return new Response(null, { status: 500 });
-      // For enrichMeta calls during markdown fallback
       return new Response(JSON.stringify({ data: [] }),
         { status: 200, headers: { "Content-Type": "application/json" } });
     };
 
-    const mdPath = resolve(tmpDir, "fallback.md");
+    const mdPath = resolve(cacheDir, "markdown", "zztest_ref_fallback2.md");
+    testFiles.push(mdPath);
     writeFileSync(mdPath, `## References\n\n[1] A. "Fallback Reference Title Long Enough." 2021.\n`);
 
     const meta: PaperMeta = { title: "T", normalizedTitle: "t", s2Id: "fail", markdownPath: mdPath };
